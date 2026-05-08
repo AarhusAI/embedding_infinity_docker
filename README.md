@@ -32,8 +32,9 @@ flowchart LR
 | `bge-m3`    | `michaelf34/infinity:*`                | `7997`        | none — proxied via `/bge/*`                     |
 | `e5-large`  | `michaelf34/infinity:*`                | `7997`        | none — proxied via `/`                          |
 
-The model containers share a named Docker volume (`infinity-hf-cache`) for the Hugging Face cache
-so they don't double-download tokenizers and configs.
+The model containers share a host bind mount at `./.docker/data/hf_cache` (mounted at
+`/hf-cache`, `HF_HOME=/hf-cache`) for the Hugging Face cache so they don't double-download
+tokenizers and configs. The directory is committed empty via `.docker/data/.gitignore`.
 
 ## Two profiles, one repo
 
@@ -70,7 +71,7 @@ Missing or unknown client token → `authz` returns 401 → nginx blocks the req
   ```
 - An `api_keys.txt` with at least one client token (see *First-time setup* below) — the file
   *must* exist before `up -d` or Docker bind-mounts a directory and every request 500s.
-- Disk: ~5 GB for combined model weights in `infinity-hf-cache`
+- Disk: ~5 GB for combined model weights under `./.docker/data/hf_cache`
 - Server VRAM: target deployment is a **single 16 GB GPU** shared by both services. Steady-state
   fp16 footprint is ~7–10 GB; peaks under long bge-m3 inputs (8 k-token context) can reach
   ~12–13 GB at the default batch sizes (`bge-m3=16`, `e5-large=32`). Raise batch sizes
@@ -189,8 +190,8 @@ docker compose exec nginx wget -qO- http://localhost:8080/v1/models   # proxied 
 docker compose restart bge-m3
 docker compose restart nginx                                          # picks up template edits
 
-docker compose down                       # stop, keep cache volume
-docker compose down -v                    # stop AND wipe HF cache
+docker compose down                       # stop services
+rm -rf .docker/data/hf_cache/*            # wipe HF cache (now a host bind mount, so `down -v` won't touch it)
 ```
 
 ## Tuning
