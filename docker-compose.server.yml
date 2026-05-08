@@ -58,3 +58,25 @@ services:
             - driver: nvidia
               device_ids: ["${E5_LARGE_GPU:-0}"]
               capabilities: [gpu]
+
+  bge-reranker:
+    restart: unless-stopped
+    ports: !reset []
+    command:
+      - v2
+      - --model-id=BAAI/bge-reranker-v2-m3
+      - --served-model-name=bge-reranker-v2-m3
+      - --engine=torch
+      - --dtype=float16
+      - --device=cuda
+      - --port=7997
+      # Conservative because the 16 GB card is already shared with bge-m3 and
+      # e5-large; reranker pairs (query, doc) inflate effective batch.
+      - --batch-size=${BGE_RERANKER_BATCH_SIZE:-8}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${BGE_RERANKER_GPU:-0}"]
+              capabilities: [gpu]

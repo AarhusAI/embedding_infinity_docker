@@ -1,9 +1,9 @@
 # embedding_infinity_docker
 
-Two [michaelfeil/infinity](https://github.com/michaelfeil/infinity) embedding services
-(`BAAI/bge-m3` and `intfloat/multilingual-e5-large`) sitting behind an authenticating nginx
-gateway. Clients hit a single host:port, present a bearer token, and get routed to the right
-backend by URL prefix.
+Three [michaelfeil/infinity](https://github.com/michaelfeil/infinity) inference services —
+two embedders (`BAAI/bge-m3`, `intfloat/multilingual-e5-large`) and one reranker
+(`BAAI/bge-reranker-v2-m3`) — sitting behind an authenticating nginx gateway. Clients hit a
+single host:port, present a bearer token, and get routed to the right backend by URL prefix.
 
 The Infinity image lives at [`michaelf34/infinity`](https://hub.docker.com/r/michaelf34/infinity)
 on Docker Hub (the GitHub user is `michaelfeil`, the Docker Hub user is `michaelf34`).
@@ -16,21 +16,24 @@ flowchart LR
     nginx["nginx :8080"]
     authz["authz :8000<br/>verifies bearer token"]
     bge["bge-m3 :7997"]
+    rerank["bge-reranker :7997"]
     e5["e5-large :7997<br/>(default)"]
 
     client -- "Authorization: Bearer &lt;client-token&gt;" --> nginx
     nginx -. "auth_request /_authz" .-> authz
     authz -. "204 ok / 401 deny" .-> nginx
     nginx -- "/bge/*" --> bge
+    nginx -- "/reranker/*" --> rerank
     nginx -- "/" --> e5
 ```
 
-| Service     | Image                                  | Internal port | External surface                                |
-| ----------- | -------------------------------------- | ------------- | ----------------------------------------------- |
-| `nginx`     | `nginxinc/nginx-unprivileged:alpine`   | `8080`        | `localhost:<random>` (local) / Traefik (server) |
-| `authz`     | `python:3.12-alpine`                   | `8000`        | none — only nginx talks to it                   |
-| `bge-m3`    | `michaelf34/infinity:*`                | `7997`        | none — proxied via `/bge/*`                     |
-| `e5-large`  | `michaelf34/infinity:*`                | `7997`        | none — proxied via `/`                          |
+| Service        | Image                                  | Internal port | External surface                                |
+| -------------- | -------------------------------------- | ------------- | ----------------------------------------------- |
+| `nginx`        | `nginxinc/nginx-unprivileged:alpine`   | `8080`        | `localhost:<random>` (local) / Traefik (server) |
+| `authz`        | `python:3.12-alpine`                   | `8000`        | none — only nginx talks to it                   |
+| `bge-m3`       | `michaelf34/infinity:*`                | `7997`        | none — proxied via `/bge/*`                     |
+| `bge-reranker` | `michaelf34/infinity:*`                | `7997`        | none — proxied via `/reranker/*`                |
+| `e5-large`     | `michaelf34/infinity:*`                | `7997`        | none — proxied via `/`                          |
 
 The model containers share a host bind mount at `./.docker/data/hf_cache` (mounted at
 `/hf-cache`, `HF_HOME=/hf-cache`) for the Hugging Face cache so they don't double-download
@@ -71,11 +74,14 @@ Missing or unknown client token → `authz` returns 401 → nginx blocks the req
   ```
 - An `api_keys.txt` with at least one client token (see *First-time setup* below) — the file
   *must* exist before `up -d` or Docker bind-mounts a directory and every request 500s.
-- Disk: ~5 GB for combined model weights under `./.docker/data/hf_cache`
-- Server VRAM: target deployment is a **single 16 GB GPU** shared by both services. Steady-state
-  fp16 footprint is ~7–10 GB; peaks under long bge-m3 inputs (8 k-token context) can reach
-  ~12–13 GB at the default batch sizes (`bge-m3=16`, `e5-large=32`). Raise batch sizes
-  cautiously and watch `nvidia-smi` for the first heavy run.
+- Disk: ~7 GB for combined model weights under `./.docker/data/hf_cache` (bge-m3 ~2.3 GB,
+  e5-large ~2.2 GB, bge-reranker ~2.3 GB)
+- Server VRAM: target deployment is a **single 16 GB GPU** shared by all three services.
+  Steady-state fp16 footprint is ~9–12 GB; peaks under long bge-m3 inputs (8 k-token context)
+  or large rerank pair batches can edge close to the 16 GB ceiling at the default batch sizes
+  (`bge-m3=16`, `e5-large=32`, `bge-reranker=8`). Raise batch sizes cautiously and watch
+  `nvidia-smi` for the first heavy run; the first lever if it OOMs is dropping
+  `BGE_M3_BATCH_SIZE` to `8`.
 
 ## First-time setup
 
@@ -169,13 +175,38 @@ curl -sS "$HOST/bge/embeddings/colbert" \
   -d '{"model":"bge-m3","input":["hej fra Aarhus"]}'
 ```
 
+### Reranking with bge-reranker-v2-m3
+
+The reranker is a **cross-encoder**: given a query and a set of candidate documents it returns
+a relevance score per document. Different shape from the embedders — no `input` array, no
+vectors back. Standard pipeline is to recall with bge-m3 / e5-large, then rerank the top-K with
+this service.
+
+```bash
+curl -sS "$HOST/reranker/rerank" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "model": "bge-reranker-v2-m3",
+        "query": "hvor ligger Aarhus?",
+        "documents": [
+          "Aarhus er Danmarks næststørste by.",
+          "Paris er hovedstaden i Frankrig.",
+          "Aarhus ligger i Jylland."
+        ],
+        "top_n": 3
+      }'
+```
+
+Response is a list of `{index, relevance_score}` entries sorted by score, descending.
+
 Endpoint paths follow the running Infinity version — `docker compose exec bge-m3 wget -qO-
 http://localhost:7997/openapi.json` shows the live spec.
 
 ## Operations
 
 ```bash
-# Status — all four services should be healthy
+# Status — all five services should be healthy (nginx, authz, bge-m3, e5-large, bge-reranker)
 docker compose ps
 
 # Inspect token verdicts (204 ok / 401 deny, with client IP and label)
@@ -196,10 +227,13 @@ rm -rf .docker/data/hf_cache/*            # wipe HF cache (now a host bind mount
 
 ## Tuning
 
-- **Two GPUs** (not the current server): set `BGE_M3_GPU=0` and `E5_LARGE_GPU=1` in `.env`.
-  On the production server (single 16 GB card) leave both at `0`.
-- **Batch sizes**: defaults are CPU 8/8, GPU 16/32 (bge-m3 is conservative because of its
-  8 k-token context). Pin `BGE_M3_BATCH_SIZE` / `E5_LARGE_BATCH_SIZE` in `.env` to override.
+- **Multiple GPUs** (not the current server): set `BGE_M3_GPU`, `E5_LARGE_GPU`, and
+  `BGE_RERANKER_GPU` independently in `.env` to spread services across cards. On the production
+  server (single 16 GB card) leave all three at `0`.
+- **Batch sizes**: defaults are CPU 8/8/8, GPU 16/32/8 (bge-m3 conservative because of its
+  8 k-token context, reranker conservative because (query, doc) pair scoring inflates the
+  effective batch). Pin `BGE_M3_BATCH_SIZE` / `E5_LARGE_BATCH_SIZE` / `BGE_RERANKER_BATCH_SIZE`
+  in `.env` to override.
 - **Quantisation**: change `--dtype=float16` to `int8` in `docker-compose.server.yml` to roughly
   halve VRAM at a small accuracy cost.
 - **Pin the image**: replace `michaelf34/infinity:latest` with a tagged release for reproducible

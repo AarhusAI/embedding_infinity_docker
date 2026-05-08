@@ -14,6 +14,14 @@ upstream api_bge {
     keepalive_timeout 65s;
 }
 
+upstream api_reranker {
+    server bge-reranker:7997;
+
+    keepalive 64;
+    keepalive_requests 1000;
+    keepalive_timeout 65s;
+}
+
 server {
     listen ${NGINX_PORT};
     server_name localhost;
@@ -48,6 +56,18 @@ server {
         auth_request /_authz;
 
         proxy_pass http://api_bge/;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /reranker/ {
+        auth_request /_authz;
+
+        proxy_pass http://api_reranker/;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;

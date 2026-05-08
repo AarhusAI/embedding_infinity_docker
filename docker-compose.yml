@@ -16,6 +16,8 @@ services:
         condition: service_started
       bge-m3:
         condition: service_started
+      bge-reranker:
+        condition: service_started
       authz:
         condition: service_healthy
     ports:
@@ -96,6 +98,32 @@ services:
       - --device=cpu
       - --port=7997
       - --batch-size=${E5_LARGE_BATCH_SIZE:-8}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7997/health', timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  bge-reranker:
+    image: michaelf34/infinity:${INFINITY_IMAGE_VERSION:?}
+    ports:
+      - "7997"
+    environment:
+      HF_HOME: /hf-cache
+      HUGGINGFACE_HUB_TOKEN: ${HF_TOKEN:-}
+      INFINITY_LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - ./.docker/data/hf_cache:/hf-cache
+    command:
+      - v2
+      - --model-id=BAAI/bge-reranker-v2-m3
+      - --served-model-name=bge-reranker-v2-m3
+      - --engine=torch
+      - --dtype=float32
+      - --device=cpu
+      - --port=7997
+      - --batch-size=${BGE_RERANKER_BATCH_SIZE:-8}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7997/health', timeout=2).status==200 else 1)"]
       interval: 30s
