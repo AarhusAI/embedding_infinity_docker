@@ -54,6 +54,8 @@ services:
 
   bge-m3:
     image: michaelf34/infinity:${INFINITY_IMAGE_VERSION:?}
+    networks:
+      - app
     ports:
       - "7997"
     environment:
@@ -81,6 +83,8 @@ services:
 
   e5-large:
     image: michaelf34/infinity:${INFINITY_IMAGE_VERSION:?}
+    networks:
+      - app
     ports:
       - "7997"
     environment:
@@ -107,6 +111,8 @@ services:
 
   bge-reranker:
     image: michaelf34/infinity:${INFINITY_IMAGE_VERSION:?}
+    networks:
+      - app
     ports:
       - "7997"
     environment:
