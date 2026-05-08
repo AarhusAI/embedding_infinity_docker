@@ -1,0 +1,60 @@
+services:
+  nginx:
+    restart: unless-stopped
+    ports: !reset []
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=frontend"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-http.rule=Host(`${COMPOSE_SERVER_DOMAIN}`)"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-http.entrypoints=web"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.entrypoints=websecure"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`${COMPOSE_SERVER_DOMAIN}`)"
+
+  authz:
+    restart: unless-stopped
+    ports: !reset []
+
+  bge-m3:
+    restart: unless-stopped
+    ports: !reset []
+    command:
+      - v2
+      - --model-id=BAAI/bge-m3
+      - --served-model-name=bge-m3
+      - --engine=torch
+      - --dtype=float16
+      - --device=cuda
+      - --port=7997
+      # Lower than e5-large because bge-m3's 8192-token context can balloon
+      # activation memory; safer when sharing a 16 GB card.
+      - --batch-size=${BGE_M3_BATCH_SIZE:-16}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # Pin to one GPU; set BGE_M3_GPU and E5_LARGE_GPU to split across cards.
+              device_ids: ["${BGE_M3_GPU:-0}"]
+              capabilities: [gpu]
+
+  e5-large:
+    restart: unless-stopped
+    ports: !reset []
+    command:
+      - v2
+      - --model-id=intfloat/multilingual-e5-large
+      - --served-model-name=multilingual-e5-large
+      - --engine=torch
+      - --dtype=float16
+      - --device=cuda
+      - --port=7997
+      - --batch-size=${E5_LARGE_BATCH_SIZE:-32}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${E5_LARGE_GPU:-0}"]
+              capabilities: [gpu]

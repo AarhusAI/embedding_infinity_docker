@@ -1,0 +1,8 @@
+# One bearer token per line. Text after `#` is a comment and is ignored.
+# Blank lines are ignored. Edits take effect on the next request; no restart.
+#
+# Format:  <token> # <name> <email>
+#
+# Examples:
+# tok_abc123 # Alice <alice@example.com>
+# tok_def456 # Bob <bob@example.com>

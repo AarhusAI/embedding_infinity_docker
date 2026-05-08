@@ -1,0 +1,108 @@
+networks:
+  frontend:
+    external: true
+  app:
+    driver: bridge
+    internal: false
+
+services:
+  nginx:
+    image: nginxinc/nginx-unprivileged:alpine
+    networks:
+      - app
+      - frontend
+    depends_on:
+      e5-large:
+        condition: service_started
+      bge-m3:
+        condition: service_started
+      authz:
+        condition: service_healthy
+    ports:
+      - '8080'
+    volumes:
+      - ./.docker/templates:/etc/nginx/templates:ro
+    environment:
+      NGINX_WEB_ROOT: /app
+      NGINX_PORT: 8080
+      NGINX_ALLOW_METRICS_IP: "${NGINX_ALLOW_METRICS_IP}"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=frontend"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`${COMPOSE_DOMAIN}`)"
+
+  authz:
+    image: python:3.12-alpine
+    networks:
+      - app
+    user: "65534:65534"
+    working_dir: /app
+    command: python -u app.py
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./.docker/authz/app.py:/app/app.py:ro
+      - ./.docker/authz/api_keys.txt:/keys/api_keys.txt:ro
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz').read()" ]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 3s
+
+  bge-m3:
+    image: michaelf34/infinity:${INFINITY_IMAGE_VERSION:?}
+    ports:
+      - "7997"
+    environment:
+      # Shared HF cache so the two services don't re-download overlapping files.
+      HF_HOME: /hf-cache
+      HUGGINGFACE_HUB_TOKEN: ${HF_TOKEN:-}
+      INFINITY_LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - hf-cache:/hf-cache
+    command:
+      - v2
+      - --model-id=BAAI/bge-m3
+      - --served-model-name=bge-m3
+      - --engine=torch
+      - --dtype=float32
+      - --device=cpu
+      - --port=7997
+      - --batch-size=${BGE_M3_BATCH_SIZE:-8}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7997/health', timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  e5-large:
+    image: michaelf34/infinity:${INFINITY_IMAGE_VERSION:?}
+    ports:
+      - "7997"
+    environment:
+      HF_HOME: /hf-cache
+      HUGGINGFACE_HUB_TOKEN: ${HF_TOKEN:-}
+      INFINITY_LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - hf-cache:/hf-cache
+    command:
+      - v2
+      - --model-id=intfloat/multilingual-e5-large
+      - --served-model-name=multilingual-e5-large
+      - --engine=torch
+      - --dtype=float32
+      - --device=cpu
+      - --port=7997
+      - --batch-size=${E5_LARGE_BATCH_SIZE:-8}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7997/health', timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+volumes:
+  hf-cache:
+    name: infinity-hf-cache
